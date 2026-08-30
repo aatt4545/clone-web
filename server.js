@@ -74,7 +74,7 @@ function getExtension(url, contentType) {
 }
 
 // ============================================
-// リソース取得
+// リソース取得（403対策済み）
 // ============================================
 async function fetchResource(url, baseUrl) {
     try {
@@ -84,18 +84,28 @@ async function fetchResource(url, baseUrl) {
             responseType: 'arraybuffer',
             timeout: 30000,
             maxRedirects: 10,
+            validateStatus: (status) => status < 500,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
                 'Accept': '*/*',
                 'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8',
-                'Referer': baseUrl
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Referer': baseUrl,
+                'Origin': new URL(baseUrl).origin,
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'same-origin',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
             }
         });
         
         return {
             data: response.data,
             contentType: response.headers['content-type'],
-            finalUrl: response.request.res.responseUrl || fullUrl
+            finalUrl: response.request.res.responseUrl || fullUrl,
+            status: response.status
         };
     } catch(e) {
         return null;
@@ -103,9 +113,9 @@ async function fetchResource(url, baseUrl) {
 }
 
 // ============================================
-// CSS内のリソース抽出（Cheerio不要・文字列処理）
+// CSS内のリソース抽出
 // ============================================
-async function extractCSSResources(cssCode, cssUrl, config, resources, resourceMap) {
+async function extractCSSResources(cssCode, cssUrl, config, resources) {
     const urlRegex = /url\(['"]?([^'")]+)['"]?\)/g;
     let match;
     let updatedCSS = cssCode;
@@ -122,15 +132,13 @@ async function extractCSSResources(cssCode, cssUrl, config, resources, resourceM
         if (!fullAssetUrl) continue;
         
         const content = await fetchResource(fullAssetUrl, cssUrl);
-        if (content && content.data) {
+        if (content && content.data && content.status !== 403 && content.status !== 404) {
             const ext = getExtension(fullAssetUrl, content.contentType);
             const filename = config.output && config.output.randomizeNames 
                 ? randomName(ext) 
                 : path.basename(new URL(fullAssetUrl).pathname) || randomName(ext);
             
             resources[filename] = content.data;
-            resourceMap[fullAssetUrl] = filename;
-            resourceMap[assetUrl] = filename;
             
             updatedCSS = updatedCSS.split(assetUrl).join(filename);
         }
@@ -140,9 +148,9 @@ async function extractCSSResources(cssCode, cssUrl, config, resources, resourceM
 }
 
 // ============================================
-// HTML内のリソース抽出（CheerioのDOM操作で正確に）
+// HTML内のリソース抽出（Cheerio DOM操作）
 // ============================================
-async function extractHTMLResources($, html, url, config, resources, resourceMap) {
+async function extractHTMLResources($, url, config, resources) {
     const maxResources = (config.clone && config.clone.maxResources) || 500;
     
     // CSS (link rel="stylesheet")
@@ -161,10 +169,10 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             console.log(`Fetching CSS: ${fullCssUrl}`);
             
             const content = await fetchResource(fullCssUrl, url);
-            if (content && content.data) {
+            if (content && content.data && content.status !== 403 && content.status !== 404) {
                 let cssCode = Buffer.from(content.data).toString('utf8');
                 
-                cssCode = await extractCSSResources(cssCode, fullCssUrl, config, resources, resourceMap);
+                cssCode = await extractCSSResources(cssCode, fullCssUrl, config, resources);
                 
                 if (config.output && config.output.minify) {
                     cssCode = minifyCSS(cssCode);
@@ -176,7 +184,6 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
                 
                 resources[filename] = Buffer.from(cssCode);
                 
-                // Cheerioで直接href属性を書き換え
                 $(el).attr('href', filename);
                 
                 console.log(`Added CSS: ${filename} (${cssCode.length} bytes)`);
@@ -200,7 +207,7 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             console.log(`Fetching JS: ${fullJsUrl}`);
             
             const content = await fetchResource(fullJsUrl, url);
-            if (content && content.data) {
+            if (content && content.data && content.status !== 403 && content.status !== 404) {
                 let jsCode = Buffer.from(content.data).toString('utf8');
                 
                 if (config.output && config.output.obfuscate) {
@@ -215,7 +222,6 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
                 
                 resources[filename] = Buffer.from(jsCode);
                 
-                // Cheerioで直接src属性を書き換え
                 $(el).attr('src', filename);
                 
                 console.log(`Added JS: ${filename} (${jsCode.length} bytes)`);
@@ -236,10 +242,8 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             const fullImgUrl = resolveURL(src, url);
             if (!fullImgUrl) continue;
             
-            console.log(`Fetching image: ${fullImgUrl}`);
-            
             const content = await fetchResource(fullImgUrl, url);
-            if (content && content.data) {
+            if (content && content.data && content.status !== 403 && content.status !== 404) {
                 const ext = getExtension(fullImgUrl, content.contentType);
                 const filename = config.output && config.output.randomizeNames 
                     ? randomName(ext) 
@@ -247,7 +251,6 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
                 
                 resources[filename] = content.data;
                 
-                // Cheerioで直接src属性を書き換え
                 $(el).attr('src', filename);
                 
                 console.log(`Added image: ${filename} (${Buffer.byteLength(content.data)} bytes)`);
@@ -258,8 +261,6 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
         const srcsetElements = $('img[srcset]').toArray();
         
         for (const el of srcsetElements) {
-            if (Object.keys(resources).length >= maxResources) break;
-            
             const srcset = $(el).attr('srcset');
             if (!srcset) continue;
             
@@ -273,7 +274,7 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
                 if (!fullImgUrl) continue;
                 
                 const content = await fetchResource(fullImgUrl, url);
-                if (content && content.data) {
+                if (content && content.data && content.status !== 403 && content.status !== 404) {
                     const ext = getExtension(fullImgUrl, content.contentType);
                     const filename = config.output && config.output.randomizeNames 
                         ? randomName(ext) 
@@ -281,19 +282,16 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
                     
                     resources[filename] = content.data;
                     
-                    // srcset内のURLを置換
                     const newSrcset = srcset.split(srcsetUrl).join(filename);
                     $(el).attr('srcset', newSrcset);
                 }
             }
         }
         
-        // 背景画像 (style属性内)
+        // 背景画像
         const bgElements = $('[style*="background"]').toArray();
         
         for (const el of bgElements) {
-            if (Object.keys(resources).length >= maxResources) break;
-            
             const style = $(el).attr('style') || '';
             const bgRegex = /background(?:-image)?\s*:\s*url\(['"]?([^'")]+)['"]?\)/g;
             let match;
@@ -309,7 +307,7 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
                 if (!fullBgUrl) continue;
                 
                 const content = await fetchResource(fullBgUrl, url);
-                if (content && content.data) {
+                if (content && content.data && content.status !== 403 && content.status !== 404) {
                     const ext = getExtension(fullBgUrl, content.contentType);
                     const filename = config.output && config.output.randomizeNames 
                         ? randomName(ext) 
@@ -336,7 +334,7 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             if (!fullIconUrl) continue;
             
             const content = await fetchResource(fullIconUrl, url);
-            if (content && content.data) {
+            if (content && content.data && content.status !== 403 && content.status !== 404) {
                 const ext = getExtension(fullIconUrl, content.contentType);
                 const filename = config.output && config.output.randomizeNames 
                     ? randomName(ext) 
@@ -363,7 +361,7 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             if (!fullFontUrl) continue;
             
             const content = await fetchResource(fullFontUrl, url);
-            if (content && content.data) {
+            if (content && content.data && content.status !== 403 && content.status !== 404) {
                 const ext = getExtension(fullFontUrl, content.contentType);
                 const filename = config.output && config.output.randomizeNames 
                     ? randomName(ext) 
@@ -390,7 +388,7 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             if (!fullMediaUrl) continue;
             
             const content = await fetchResource(fullMediaUrl, url);
-            if (content && content.data) {
+            if (content && content.data && content.status !== 403 && content.status !== 404) {
                 const ext = getExtension(fullMediaUrl, content.contentType);
                 const filename = config.output && config.output.randomizeNames 
                     ? randomName(ext) 
@@ -403,7 +401,6 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
         }
     }
     
-    // HTML全体を更新（Cheerioで書き換えた内容を反映）
     const updatedHTML = $.html();
     
     return updatedHTML;
@@ -418,21 +415,26 @@ async function cloneSiteDeep(url, config) {
     const response = await axios.get(url, {
         timeout: 30000,
         maxRedirects: 10,
+        validateStatus: (status) => status < 500,
         headers: {
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8'
+            'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://www.google.com/',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
         }
     });
     
     const html = response.data;
     console.log(`HTML size: ${html.length} bytes`);
+    console.log(`Status: ${response.status}`);
     
     const $ = cheerio.load(html);
     const resources = {};
-    const resourceMap = {};
     
-    const updatedHTML = await extractHTMLResources($, html, url, config, resources, resourceMap);
+    const updatedHTML = await extractHTMLResources($, url, config, resources);
     
     let finalHTML = updatedHTML;
     
@@ -539,7 +541,6 @@ app.post('/clone', async (req, res) => {
         
         archive.pipe(res);
         
-        // site-name/ ディレクトリを作成してからファイルを追加
         const siteDir = `${siteName}/`;
         archive.append(null, { name: siteDir, type: 'directory' });
         
@@ -554,7 +555,6 @@ app.post('/clone', async (req, res) => {
         console.log(`Clone complete: ${Object.keys(resources).length} files`);
     } catch(e) {
         console.error('Clone error:', e.message);
-        console.error(e.stack);
         res.status(500).json({ error: e.message });
     }
 });
